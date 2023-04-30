@@ -1,0 +1,53 @@
+from google.colab import drive
+drive.mount('/gdrive')
+
+
+import os
+os.chdir('/gdrive/MyDrive/Sample Code/GeoEstimation')
+
+
+!pip3 install -r requirements.txt
+
+
+import os
+import torch
+import numpy as np
+from classification.utils_global import vectorized_gc_distance, gcd_threshold_eval
+
+# Read the groundtruth
+results_file = open('/gdrive/MyDrive/Sample Code/yfcc4k/SVMs/Results/tags_license.csv')
+gt_name = []
+gt_lat = []
+gt_lon = []
+pred_lat = []
+pred_lon = []
+
+ctr = 0 
+
+for line in results_file: 
+    if ctr == 0:
+        ctr += 1
+        continue
+    line = line.strip() 
+    line_parts = line.split(',')
+    gt_name.append(line_parts[0]) 
+    gt_lat.append(float(line_parts[1])) 
+    gt_lon.append(float(line_parts[3]))
+    pred_lat.append(float(line_parts[2]))
+    pred_lon.append(float(line_parts[4]))  
+    ctr += 1
+results_file.close()
+
+# Convert all the lists to torch format
+latitudes_gt = torch.from_numpy(np.array(gt_lat))
+longitudes_gt = torch.from_numpy(np.array(gt_lon))
+latitudes = torch.from_numpy(np.array(pred_lat))
+longitudes = torch.from_numpy(np.array(pred_lon))
+
+# Compute the distance and then the performance
+gcd = vectorized_gc_distance(latitudes, longitudes, latitudes_gt, longitudes_gt) # Distances are in km
+results =  gcd_threshold_eval(gcd) # The default thresholds are 1 km ,25 km ,200 km, 750 km and 2500 km
+
+# Display the results
+for k, v in results.items():
+    print('{:.3f}% of the predictions are within {:d} km of the groundtruth'.format(v*100, k))
