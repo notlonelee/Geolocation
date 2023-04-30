@@ -1,0 +1,169 @@
+from google.colab import drive
+drive.mount('/gdrive')
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import copy
+%matplotlib inline
+
+meta = pd.read_csv('/gdrive/MyDrive/Sample Code/im2gps3k/metadata/im2gps3k_clearedtagsv4.csv')
+
+
+# Count the number of times each tag appears in the dataset
+from collections import defaultdict
+
+tag_counts = defaultdict(int)
+
+for one_tag in meta['tags:']:
+    tag_counts[one_tag] = tag_counts[one_tag] + 1
+
+print(tag_counts)
+
+
+# Filter the dataset such that only tags that appear multiple times are used
+
+min_count = 5 # Minimum number of times we want the tag to appear
+
+# Place holder to get the filtered values
+tags_filtered = []
+lat_filtered = []
+lon_filtered = []
+
+for one_tag, one_lat, one_lon in zip(meta['tags:'], meta['latitude:'], meta['longitude:']):
+    if tag_counts[one_tag] > min_count: # Check that the current tag appears often enough
+        tags_filtered.append(one_tag)
+        lat_filtered.append(one_lat)
+        lon_filtered.append(one_lon)
+
+# Create new dataframe with filtered data
+data_filtered = pd.DataFrame({'tags:':tags_filtered, 'latitude:':lat_filtered, 'longitude:':lon_filtered})
+print(data_filtered)
+
+
+# Convert tags from text to number categories
+data_filtered['tags_categories'] = data_filtered['tags:'].astype('category')
+data_filtered['tags_categories'] = data_filtered['tags_categories'].cat.codes
+
+
+# Split train into X and y
+X = data_filtered['tags_categories']
+X = np.array(X).reshape((-1,1)) # Be careful with reshape statements. Print the array to check the order makes sense.
+y = data_filtered['latitude:'], data_filtered['longitude:']
+y = np.array(y)
+y = y.transpose() # Do not use y.reshape((-1,2)) as it destroys the order of elements
+
+num_samples = y.shape[0]
+
+print(X.shape) # Check the shape - here we are still at the category labels so still (num_samples, 1)
+print(y.shape) # Check the shape - here we have lat and long so it should be (num_samples, 2)
+print(X.max()) # This should be the number of unique tags we have
+print(y[:10,:]) # Print and check that y is of format [[lat1, lon1], [lat2, lon2], ...]
+
+
+# Convert X from one number to one-hot vectors
+## We use one-hot vectors instead of single numbers
+## One-hot vectors are more suitable for cases where the order of the numbers do not have meaning
+## e.g. we might have 'london' = 1 and 'paris, france' = 2 but the value 1.5 has no meaning
+## also, we want the result to be same regardless of 'london' = 1 or 'london' = 2
+from sklearn.preprocessing import OneHotEncoder
+
+oh_enc = OneHotEncoder(handle_unknown='ignore')
+X_oh = oh_enc.fit_transform(X.reshape((-1,1)))
+X_oh = X_oh.toarray() # Convert sparse matrix to full matrix
+print(X_oh.shape) # Check the shape, it should be (num_samples, number of unique tags)
+
+
+# Calculate the number of training and test images based on the fraction
+test_size_fraction = 0.2
+num_train = num_samples * (1 - test_size_fraction)
+num_train = int(num_train)
+num_test = num_samples - num_train
+
+
+# from sklearn.model_selection import train_test_split
+# X_train, X_test, y_train, y_test = train_test_split(X_oh, y, test_size = 0.2)
+
+# Instead of using train_test_split which generates a new random split each time, let's create a fixed split
+import os
+# We save the indices to this file and load it next time we need it
+shuffle_file = '/gdrive/MyDrive/Sample Code/im2gps3k/metadata/shuffle_indices_{:04d}.npy'.format(num_samples)
+if not os.path.exists(shuffle_file): # If this file is not there, create a new split and save it to a file
+    shuffle = np.random.permutation(num_samples)
+    np.save(shuffle_file, shuffle)
+else: # If the file is there, do not redo the split and just load the file
+    shuffle = np.load(shuffle_file)
+
+# The first part is used for training and the rest for testing
+train_indices = shuffle[:num_train]
+test_indices = shuffle[num_train:]
+
+# Just to check that there is no overlap between train and test
+print([x for x in train_indices if x in test_indices])
+
+
+# Split X and y in to train and test sets 
+X_train = X_oh[train_indices,:]
+X_test = X_oh[test_indices,:]
+y_train = y[train_indices,:]
+y_test = y[test_indices,:]
+
+X_train = np.array(X_train)
+X_test = np.array(X_test)
+y_train = np.array(y_train)
+y_test = np.array(y_test)
+
+# Check the shapes
+print(X_train.shape)
+print(X_test.shape)
+print(y_train.shape)
+print(y_test.shape)
+
+
+plt.hist(X, bins=X.max() + 1)
+plt.show()
+
+
+from sklearn.preprocessing import StandardScaler
+sc_X = StandardScaler()
+sc_y = StandardScaler()
+X_train = sc_X.fit_transform(X_train)
+X_test = sc_X.transform(X_test)
+y_train = sc_y.fit_transform(y_train)
+# y_test = sc_y.transform(y_test) # We do not need to transform as it is not used for training or prediction
+
+print(X_train.shape)
+print(X_test.shape)
+print(y_train.shape)
+print(y_test.shape)
+
+
+!git clone https://github.com/Analytics-for-Forecasting/msvr.git
+import os
+os.chdir('msvr')
+from model.MSVR import MSVR
+regressor = MSVR(kernel='rbf')
+regressor.fit(X_train, y_train)
+
+
+y_pred = regressor.predict(X_test)
+y_pred = sc_y.inverse_transform(y_pred)
+
+# No need to inverse transform y_test as we did not transform it in the first place
+
+y_pred_lat = pd.DataFrame(y_pred).iloc[:,0]
+y_pred_long = pd.DataFrame(y_pred).iloc[:,1]
+y_test_lat = pd.DataFrame(y_test).iloc[:,0]
+y_test_long = pd.DataFrame(y_test).iloc[:,1]
+
+print(y_pred_lat.shape)
+print(y_pred_long.shape)
+print(y_test_lat.shape)
+print(y_test_long.shape)
+
+
+df = pd.DataFrame({'Lat_GT':y_test_lat, 'Lat_Pred': y_pred_lat, 'Long_GT': y_test_long, 'Long_Pred': y_pred_long})
+print(df)
+df.to_csv('/gdrive/MyDrive/Sample Code/im2gps3k/Results/tagsv4.csv')
